@@ -1,20 +1,20 @@
-# 🔐 Detecting Credential Dumping (LSASS Memory Abuse) | Sysmon & Splunk
+# 🖥️ Endpoint Detection & Log Pipeline Analysis (Sysmon → Splunk)
 
-> **Detecting OS Credential Dumping (MITRE ATT&CK T1003.001) using Microsoft Sysmon telemetry and Splunk Enterprise SIEM.**
+> **Building an enterprise log ingestion pipeline and detecting a PowerShell execution-policy bypass (MITRE ATT&CK T1059.001) in Splunk Enterprise.**
 
 ---
 
 ## 📌 Project Overview
 
-This project demonstrates the detection, centralized log ingestion, and analysis of an **OS Credential Dumping** attack — a critical privilege escalation and lateral movement technique.
+This project demonstrates the end-to-end implementation of an enterprise-grade log ingestion pipeline and the subsequent security analysis of a simulated endpoint attack.
 
-Using **Microsoft Sysinternals Procdump** on a target Windows 10 VM, I simulated an attack targeting the volatile memory of the **Local Security Authority Subsystem Service (LSASS)**. Although local Windows Defender interdiction blocked the dump file generation, the **Splunk Universal Forwarder** successfully shipped deep process telemetry to a centralized **Splunk Enterprise** indexer, enabling forensic analysis and the creation of an Incident Response Playbook.
+By configuring **Microsoft Sysmon** on a target Windows 10 VM, forwarding logs to a centralized **Splunk Enterprise** SIEM on my Windows 11 host machine, and executing a simulated PowerShell execution policy bypass technique, I successfully captured, analyzed, and documented critical forensic artifacts.
 
 ---
 
 ## 📂 Access the Full Project Report
 
-📄 **[Download / View the Complete Project PDF Report](./Ranjit_Singh_SOC_Project_2.pdf)**
+📄 **[Download / View the Complete Project Report](./Ranjit_Singh_SOC_Project.pdf)**
 
 ---
 
@@ -22,18 +22,17 @@ Using **Microsoft Sysinternals Procdump** on a target Windows 10 VM, I simulated
 
 | Component | Technology |
 | :--- | :--- |
-| **SIEM** | Splunk Enterprise (Centralized Indexer & Search Head) |
+| **SIEM** | Splunk Enterprise (Indexer / Search Head) |
 | **Endpoint Telemetry** | Microsoft Sysmon (SwiftOnSecurity Configuration) |
 | **Log Transport** | Splunk Universal Forwarder (Port 9997 TCP) |
 | **Hypervisor** | Oracle VM VirtualBox |
-| **Target Host** | Windows 10 Pro (Virtual Machine) — `DESKTOP-S7EO8FC` |
-| **SIEM Host** | Windows 11 Pro (Physical Host) |
-| **Simulation Utility** | Microsoft Sysinternals Procdump |
-| **Adversary Technique** | OS Credential Dumping: LSASS Memory (MITRE ATT&CK T1003.001) |
+| **Target OS** | Windows 10 Pro (VM) — `DESKTOP-S7EO8FC` |
+| **Host / Collector OS** | Windows 11 Pro (Physical Host) |
+| **Simulated Threat** | PowerShell Execution Policy Bypass (MITRE ATT&CK T1059.001, T1562.001) |
 
 ---
 
-## 📐 Lab Architecture & Data Routing Pipeline
+## 📐 Lab Architecture & Log Flow
 
 ```text
 +------------------------------------------+                              +-----------------------------------------+
@@ -47,56 +46,57 @@ Using **Microsoft Sysinternals Procdump** on a target Windows 10 VM, I simulated
 
 ---
 
-## ⚡ Attack Simulation & Endpoint Interdiction
+## ⚡ The Simulation (PowerShell Evasion)
 
-To simulate credential harvesting, I executed an administrative command inside an elevated console on the Windows 10 target endpoint to write the memory space of `lsass.exe` to a dump file:
+To simulate a defense evasion technique commonly used in phishing campaigns, I ran an elevated command on the Windows 10 VM designed to bypass execution policies (`-ep bypass`) and silently download an external payload to a public directory:
 
-```cmd
-C:\Users\Public\procdump.exe -accepteula -ma lsass.exe C:\Users\Public\lsass.dmp
+```powershell
+powershell.exe -nop -ep bypass -c "Invoke-WebRequest -Uri 'https://www.google.com' -OutFile 'C:\Users\Public\google_test.txt'"
 ```
 
-**Endpoint Result:** Microsoft Defender Antivirus successfully flagged the behavior as a high-severity threat, generating a local system alert and blocking the creation of the dump file (*Access is denied*).
+**Why this matters:** threat actors frequently use this exact pattern after initial phishing access — spawning a command interpreter with bypassed execution parameters to pull tooling down from a remote C2 server.
 
 ---
 
-## 🔍 Forensic Analysis inside Splunk
+## 🔍 SOC Analyst Investigation in Splunk
 
-Despite local process termination, Sysmon successfully recorded the process execution before termination. Using Splunk, I investigated the execution parameters with the following high-fidelity query:
+As a SOC Analyst, I built a high-fidelity search query in Splunk to hunt for the download artifact:
 
 ```spl
-index=* "procdump.exe" EventCode=1
+index=* "google_test.txt"
 ```
 
-### Extracted Forensic Indicators of Compromise (IOCs)
+### Key Forensic Artifacts Extracted
 
-| Forensic Field | Discovered Value | Security Significance |
+| Forensic Field | Discovered Value | Security Relevance |
 | :--- | :--- | :--- |
-| **Target Endpoint** | `DESKTOP-S7EO8FC` | The victim machine targeted by the privilege escalation attempt |
-| **Log Source** | `WinEventLog:Microsoft-Windows-Sysmon/Operational` (Event ID 1) | Confirms Sysmon captured process-level activity |
-| **Executed Utility** | `procdump.exe` | Legitimate admin tool abused for malicious purpose (LotL) |
-| **Target Process** | `lsass.exe` via `-ma` flag | Full memory dump request — classic credential harvesting |
-| **Parent Process** | `cmd.exe` | Confirms manual terminal execution, not automated |
-| **MD5 Hash** | `969590F449B9BB5962C6420B8AF3D7D7` | Cryptographic IOC for signature matching and blocklisting |
+| **Target Endpoint** | `DESKTOP-S7EO8FC` | Confirms the exact endpoint executing the command |
+| **Source Log Pathway** | `WinEventLog:Microsoft-Windows-Sysmon/Operational` (Event ID 1) | Validates Sysmon captured process-level activity |
+| **Initiating Executable** | `PowerShell.EXE` | Identifies the true system tool used to download the file |
+| **Evasion Parameter** | `-ep bypass` | Execution Policy Bypass — strong indicator of intentional defense evasion |
+| **Current Directory** | `C:\Windows\system32\` | Payload spawned with privileged system context |
+| **Parent Process** | `cmd.exe` | Establishes parent-child hierarchy — PowerShell spawned from a console |
 
 ---
 
 ## 🛡️ Incident Response Playbook (L1 SOC Workflow)
 
-Upon identifying this execution profile, the following operational steps are triggered:
+If detected in production, the L1 SOC Analyst workflow includes:
 
-1. **Network Containment** — Isolate host `DESKTOP-S7EO8FC` from the active network segment immediately using EDR host-isolation protocols.
-2. **Credential Invalidation** — Terminate active sessions and enforce an immediate password reset for the compromised administrator account (`DESKTOP-S7EO8FC\HomeLab`).
-3. **Indicator Blocklisting** — Add the MD5/SHA256 signature hashes of the `procdump.exe` execution file to the centralized EDR/AV blocklist.
-4. **Attack Surface Reduction (ASR)** — Enable Windows Defender ASR Rule ID `9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2` globally via Group Policy to prevent applications from obtaining unauthorized handles to LSASS.
+1. **Alert Triage & Validation** — Categorize as **High Severity** due to the `-ep bypass` flag, which strongly indicates intentional defense evasion.
+2. **Network Isolation** — Isolate host `DESKTOP-S7EO8FC` immediately via EDR to prevent lateral movement.
+3. **Process Termination** — Kill the active process IDs (PIDs) associated with the malicious execution string.
+4. **Eradication** — Locate, analyze in a sandbox, and safely delete the downloaded `google_test.txt` file from `C:\Users\Public\`.
+5. **Host Hardening** — Enforce AppLocker/WDAC policy controls to block non-administrative execution of PowerShell.
 
 ---
 
-## 🎓 Skills & Key Competencies Demonstrated
+## 🎓 Key Takeaways & Skills Proven
 
-- **Advanced Threat Analysis:** Understanding credential harvesting techniques and corresponding memory protection architectures
-- **Telemetry Correlation:** Investigating parsed JSON/XML data in a SIEM to track process creation metadata and process lineage
-- **Proactive Hardening:** Mapping detection gaps directly to preventive ASR and GPO security controls
-- **Incident Response:** Structuring triage, containment, eradication and recovery steps into a repeatable L1 playbook
+- **SIEM Engineering:** Successfully configured and validated a functional remote log ingestion pipeline from scratch
+- **Forensic Auditing:** Demonstrated working knowledge of Sysmon Event ID 1 (Process Creation) and forensic telemetry fields
+- **Threat Mitigation:** Translated raw alerts into structured containment, eradication and hardening steps
+- **Detection Fidelity:** Built targeted SPL searches to isolate a single high-value artifact from noisy index data
 
 ---
 
